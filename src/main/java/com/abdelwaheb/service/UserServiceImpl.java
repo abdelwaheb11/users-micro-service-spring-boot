@@ -1,6 +1,10 @@
 package com.abdelwaheb.service;
 
+import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
+import java.util.Optional;
+import java.util.Random;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -8,8 +12,15 @@ import org.springframework.stereotype.Service;
 
 import com.abdelwaheb.entity.Roles;
 import com.abdelwaheb.entity.User;
+import com.abdelwaheb.entity.VerificationToken;
+import com.abdelwaheb.exception.EmailAlreadyExistsException;
+import com.abdelwaheb.exception.ExpiredTokenException;
+import com.abdelwaheb.exception.InvalidTokenException;
+import com.abdelwaheb.register.RegistationRequest;
 import com.abdelwaheb.repos.RoleRepository;
 import com.abdelwaheb.repos.UsersRepository;
+import com.abdelwaheb.repos.VerificationTokenRepository;
+import com.abdelwaheb.util.EmailSender;
 
 
 @Service
@@ -20,6 +31,12 @@ public class UserServiceImpl implements UserService {
 
     @Autowired
     RoleRepository roleRepository;
+
+    @Autowired
+    VerificationTokenRepository verificationTokenRepo;
+
+    @Autowired
+    EmailSender emailSender;
 
     @Autowired
     BCryptPasswordEncoder bCryptPasswordEncoder;
@@ -53,6 +70,70 @@ public class UserServiceImpl implements UserService {
         return this.usersRepository.findAll();
     }
 
+
+    @Override
+    public User registerUser(RegistationRequest request) {
+        Optional<User> optionaluser = this.usersRepository.findByEmail(request.getEmail());
+        if(optionaluser.isPresent())
+            throw new EmailAlreadyExistsException("email déjà existant!");
+        User newUser = new User();
+        newUser.setUsername(request.getUsername());
+        newUser.setEmail(request.getEmail());
+
+        newUser.setPassword(bCryptPasswordEncoder.encode(request.getPassword()));
+        newUser.setEnabled(false);
+        this.usersRepository.save(newUser);
+        //ajouter à newUser le role par défaut USER
+        Roles r = this.roleRepository.findByRole("USER");
+        List<Roles> roles = new ArrayList<>();
+        roles.add(r);
+        newUser.setRoles(roles);
+        this.usersRepository.save(newUser);
+        //génére le code secret
+        String code = this.generateCode();
+
+        VerificationToken token = new VerificationToken(code, newUser);
+        this.verificationTokenRepo.save(token);
+
+        sendEmailUser(newUser,token.getToken());
+
+
+        return newUser;
+    }
+
+    public String generateCode() {
+        Random random = new Random();
+        Integer code = 100000 + random.nextInt(900000);
+
+        return code.toString();
+    }
+
+    @Override
+    public void sendEmailUser(User u, String code) {
+        String emailBody ="Bonjour "+ "<h1>"+u.getUsername() +"</h1>" +
+        " Votre code de validation est "+"<h1>"+code+"</h1>";
+       emailSender.sendEmail(u.getEmail(), emailBody);
+    }
+
+
+    @Override
+    public User validateToken(String code) {
+        VerificationToken token = verificationTokenRepo.findByToken(code);
+        if(token == null){
+            throw new InvalidTokenException("Invalid Token");
+        }
+
+        User user = token.getUser();
+        Calendar calendar = Calendar.getInstance();
+        if ((token.getExpirationTime().getTime() - calendar.getTime().getTime()) <= 0){
+            verificationTokenRepo.delete(token);
+            throw new ExpiredTokenException("expired Token");
+        }
+        user.setEnabled(true);
+        this.usersRepository.save(user);
+        return user;
+    }
+       
 
     
 }
